@@ -51,6 +51,128 @@ const uint32_t INTERNAL_NODE_CHILD_SIZE = sizeof(uint32_t);
 const uint32_t INTERNAL_NODE_CELL_SIZE =
     INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE;                                            
 
+typedef struct {
+  char* buffer;
+} InputBuffer;
+
+
+enum ExecuteResult_t {
+  EXECUTE_SUCCESS,
+  EXECUTE_DUPLICATE_KEY,
+  EXECUTE_TABLE_FULL
+};
+
+typedef enum {
+  META_COMMAND_SUCCESS,
+  META_COMMAND_UNRECOGNIZED_COMMAND
+} MetaCommandResult;
+
+typedef enum {
+  PREPARE_SUCCESS,
+  PREPARE_SYNTAX_ERROR,
+  PREPARE_UNRECOGNIZED_STATEMENT,
+  PREPARE_NEGATIVE_ID,
+  PREPARE_STRING_TOO_LONG
+} PrepareResult;
+
+typedef enum { STATEMENT_INSERT, STATEMENT_SELECT } StatementType;
+
+#define COLUMN_USERNAME_SIZE 32
+#define COLUMN_EMAIL_SIZE 255
+typedef struct {
+  uint32_t id;
+  char username[COLUMN_USERNAME_SIZE + 1];
+  char email[COLUMN_EMAIL_SIZE + 1];
+} Row;
+
+typedef struct {
+  StatementType type;
+  Row row_to_insert; // Only used by insert statement
+} Statement;
+
+#define size_of_attribute(Struct, Attribute) sizeof(((Struct*)0)->Attribute)
+
+const uint32_t ID_SIZE = size_of_attribute(Row, id);
+const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
+const uint32_t EMAIL_SIZE = size_of_attribute(Row, email);
+const uint32_t ID_OFFSET = 0;
+const uint32_t USERNAME_OFFSET = ID_OFFSET + ID_SIZE;
+const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
+const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
+
+const uint32_t PAGE_SIZE = 4096;
+#define TABLE_MAX_PAGES 100
+const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
+const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;
+
+
+typedef struct {
+  int file_descriptor;
+    uint32_t file_length;
+    void* pages[TABLE_MAX_PAGES];
+    uint32_t num_pages; 
+  } Pager;
+
+
+typedef struct {
+  uint32_t root_page_num; 
+  Pager* pager;
+} Table;
+
+typedef struct {
+  Table* table;
+  uint32_t page_num;
+  uint32_t cell_num;
+  bool end_of_table;  // Indicates a position one past the last element
+} Cursor;
+
+
+
+void* get_page(Pager* pager, uint32_t page_num) {
+  if (page_num > TABLE_MAX_PAGES) {
+    printf("Tried to fetch page number out of bounds. %d > %d\n", page_num,
+            TABLE_MAX_PAGES);
+    exit(EXIT_FAILURE);
+  }
+
+  if (pager->pages[page_num] == NULL) {
+    // Cache miss. Allocate memory and load from file.
+    void* page = malloc(PAGE_SIZE);
+    uint32_t num_pages = pager->file_length / PAGE_SIZE;
+
+    // We might save a partial page at the end of the file
+    if (pager->file_length % PAGE_SIZE) {
+      num_pages += 1;
+    }
+
+    if (page_num <= num_pages) {
+      lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
+      ssize_t bytes_read = read(pager->file_descriptor, page, PAGE_SIZE);
+      if (bytes_read == -1) {
+        printf("Error reading file: %d\n", errno);
+        exit(EXIT_FAILURE);
+      }
+    }
+
+    pager->pages[page_num] = page;
+
+    if (page_num >= pager->num_pages){
+      pager->num_pages = page_num + 1; 
+    }
+  }
+
+  return pager->pages[page_num];
+}
+
+NodeType get_node_type(void* node) {
+  uint8_t value = *((uint8_t*)(node + NODE_TYPE_OFFSET));
+  return (NodeType)value;
+}
+
+void set_node_type(void* node, NodeType type) {
+  uint8_t value = type;
+  *((uint8_t*)(node + NODE_TYPE_OFFSET)) = value;
+}
 
 
 uint32_t* internal_node_num_keys(void* node) {
@@ -189,80 +311,7 @@ void initialize_internal_node(void* node) {
 }
 
 
-typedef struct {
-  char* buffer;
-} InputBuffer;
 
-
-enum ExecuteResult_t {
-  EXECUTE_SUCCESS,
-  EXECUTE_DUPLICATE_KEY,
-  EXECUTE_TABLE_FULL
-};
-
-typedef enum {
-  META_COMMAND_SUCCESS,
-  META_COMMAND_UNRECOGNIZED_COMMAND
-} MetaCommandResult;
-
-typedef enum {
-  PREPARE_SUCCESS,
-  PREPARE_SYNTAX_ERROR,
-  PREPARE_UNRECOGNIZED_STATEMENT,
-  PREPARE_NEGATIVE_ID,
-  PREPARE_STRING_TOO_LONG
-} PrepareResult;
-
-typedef enum { STATEMENT_INSERT, STATEMENT_SELECT } StatementType;
-
-#define COLUMN_USERNAME_SIZE 32
-#define COLUMN_EMAIL_SIZE 255
-typedef struct {
-  uint32_t id;
-  char username[COLUMN_USERNAME_SIZE + 1];
-  char email[COLUMN_EMAIL_SIZE + 1];
-} Row;
-
-typedef struct {
-  StatementType type;
-  Row row_to_insert; // Only used by insert statement
-} Statement;
-
-#define size_of_attribute(Struct, Attribute) sizeof(((Struct*)0)->Attribute)
-
-const uint32_t ID_SIZE = size_of_attribute(Row, id);
-const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
-const uint32_t EMAIL_SIZE = size_of_attribute(Row, email);
-const uint32_t ID_OFFSET = 0;
-const uint32_t USERNAME_OFFSET = ID_OFFSET + ID_SIZE;
-const uint32_t EMAIL_OFFSET = USERNAME_OFFSET + USERNAME_SIZE;
-const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
-
-const uint32_t PAGE_SIZE = 4096;
-#define TABLE_MAX_PAGES 100
-const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
-const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;
-
-
-typedef struct {
-  int file_descriptor;
-   uint32_t file_length;
-   void* pages[TABLE_MAX_PAGES];
-   uint32_t num_pages; 
- } Pager;
-
-
-typedef struct {
-  uint32_t root_page_num; 
-  Pager* pager;
-} Table;
-
-typedef struct {
-  Table* table;
-  uint32_t page_num;
-  uint32_t cell_num;
-  bool end_of_table;  // Indicates a position one past the last element
-} Cursor;
 
 Cursor* table_start(Table* table) {
   Cursor* cursor = malloc(sizeof(Cursor));
@@ -286,8 +335,7 @@ Cursor* table_find(Table* table, uint32_t key) {
   if (get_node_type(root_node) == NODE_LEAF) {
     return leaf_node_find(table, root_page_num, key);
   } else {
-    printf("Need to implement searching an internal node\n");
-    exit(EXIT_FAILURE);
+    return internal_node_find(table, root_page_num, key);
   }
 }
 
@@ -320,15 +368,7 @@ Cursor* leaf_node_find(Table* table, uint32_t page_num, uint32_t key) {
   return cursor;
 }
 
-NodeType get_node_type(void* node) {
-    uint8_t value = *((uint8_t*)(node + NODE_TYPE_OFFSET));
-    return (NodeType)value;
-  }
-  
-  void set_node_type(void* node, NodeType type) {
-    uint8_t value = type;
-    *((uint8_t*)(node + NODE_TYPE_OFFSET)) = value;
-  }
+
 
 
 
@@ -358,41 +398,36 @@ void deserialize_row(void *source, Row* destination) {
   memcpy(&(destination->email), source + EMAIL_OFFSET, EMAIL_SIZE);
 }
 
-void* get_page(Pager* pager, uint32_t page_num) {
-  if (page_num > TABLE_MAX_PAGES) {
-    printf("Tried to fetch page number out of bounds. %d > %d\n", page_num,
-           TABLE_MAX_PAGES);
-    exit(EXIT_FAILURE);
-  }
 
-  if (pager->pages[page_num] == NULL) {
-    // Cache miss. Allocate memory and load from file.
-    void* page = malloc(PAGE_SIZE);
-    uint32_t num_pages = pager->file_length / PAGE_SIZE;
+Cursor* internal_node_find(Table* table, uint32_t page_num, uint32_t key) {
+  void* node = get_page(table->pager, page_num);
+  uint32_t num_keys = *internal_node_num_keys(node);
 
-    // We might save a partial page at the end of the file
-    if (pager->file_length % PAGE_SIZE) {
-      num_pages += 1;
-    }
+  /* Binary search to find index of child to search */
+  uint32_t min_index = 0;
+  uint32_t max_index = num_keys; /* there is one more child than key */
 
-    if (page_num <= num_pages) {
-      lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
-      ssize_t bytes_read = read(pager->file_descriptor, page, PAGE_SIZE);
-      if (bytes_read == -1) {
-        printf("Error reading file: %d\n", errno);
-        exit(EXIT_FAILURE);
-      }
-    }
-
-    pager->pages[page_num] = page;
-
-    if (page_num >= pager->num_pages){
-      pager->num_pages = page_num + 1; 
+  while (min_index != max_index) {
+    uint32_t index = (min_index + max_index) / 2;
+    uint32_t key_to_right = *internal_node_key(node, index);
+    if (key_to_right >= key) {
+      max_index = index;
+    } else {
+      min_index = index + 1;
     }
   }
 
-  return pager->pages[page_num];
+  uint32_t child_num = *internal_node_child(node, min_index);
+  void* child = get_page(table->pager, child_num);
+  switch (get_node_type(child)) {
+    case NODE_LEAF:
+      return leaf_node_find(table, child_num, key);
+    case NODE_INTERNAL:
+      return internal_node_find(table, child_num, key);
+  }
 }
+
+
 
 void* cursor_value(Cursor* cursor) {
   uint32_t page_num = cursor->page_num;
